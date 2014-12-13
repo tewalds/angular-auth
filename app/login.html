@@ -1,0 +1,27 @@
+<div>
+	<iframe src="sink.html" name="sink" style="display:none"></iframe>
+	<form name="loginForm"
+	      action="sink.html" target="sink" method="post"
+	      ng-controller="LoginController"
+	      ng-submit="auth(action, credentials)"
+	      novalidate form-autofill-fix>
+
+		<div>
+			<label><input type="radio" ng-model="action" value="Sign up" / > Sign up</label>
+			<label><input type="radio" ng-model="action" value="Login" /> Login</label>
+			<label><input type="radio" ng-model="action" value="Forgot" /> Forgot</label>
+		</div>
+
+		<div>
+			<label for="email">Email:</label>
+			<input type="email" id="email" ng-model="credentials.email">
+		</div>
+		<div ng-show="action!='Forgot'">
+			<label for="password">Password:</label>
+			<input type="password" id="password" ng-model="credentials.password">
+		</div>
+		<div>
+			<button type="submit">{{action}}</button>
+		</div>
+	</form>
+</div>

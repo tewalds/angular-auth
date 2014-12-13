@@ -51,6 +51,15 @@ auth
 				});
 		};
 
+		authService.logout = function() {
+			return $http
+				.post('/api/logout')
+				.then(function(res) {
+					Session.destroy();
+					return res.data;
+				});
+		}
+
 		authService.isAuthenticated = function() {
 			return !!Session.userId;
 		};
@@ -84,11 +93,13 @@ auth
 		$scope.currentUser = null;
 		$scope.userRoles = USER_ROLES;
 		$scope.isAuthorized = AuthService.isAuthorized;
+		$scope.logout = AuthService.logout;
 		$scope.isLoginPage = false;
 
 		$scope.setCurrentUser = function(user) {
 			$scope.currentUser = user;
 		};
+
 	})
 	.run(function($rootScope, AUTH_EVENTS, AuthService) {
 		$rootScope.$on('$stateChangeStart', function(event, next) {

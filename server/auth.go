@@ -1,21 +1,13 @@
 package main
 
 import (
-	"io/ioutil"
+	"fmt"
+	"github.com/ant0ine/go-json-rest/rest"
 	"log"
+	"math/rand"
 	"net/http"
 	"time"
-
-	"github.com/ant0ine/go-json-rest/rest"
-	jwt "github.com/dgrijalva/jwt-go"
 )
-
-// location of the files used for signing and verification
-const (
-	privKeyPath = "keys/app.rsa"     // openssl genrsa -out app.rsa keysize
-	pubKeyPath  = "keys/app.rsa.pub" // openssl rsa -in app.rsa -pubout > app.rsa.pub
-)
-const tokenName = "token"
 
 type AuthHandlerFunc func(rest.ResponseWriter, *rest.Request, User)
 
@@ -26,19 +18,33 @@ type User struct {
 	Role     string
 }
 
+type Session struct {
+	UserId    int64
+	SessionId int64
+	CreatedAt time.Time
+	Expiry    time.Time
+}
+
+func (this *Session) name() string {
+	return fmt.Sprintf("%X:%X", this.UserId, this.SessionId)
+}
+
+const cookieName = "session"
+
 var (
-	auth       TokenAuth
+	auth       SessionAuth
 	nextUserId int64
 	users      map[int64]User
 	emails     map[string]int64
+	sessions   map[string]Session
 )
 
 func init() {
-	auth = TokenAuth{}
-	auth.loadKeys()
+	auth = SessionAuth{}
 	nextUserId = 1
 	users = make(map[int64]User)
 	emails = make(map[string]int64)
+	sessions = make(map[string]Session)
 
 	api := rest.ResourceHandler{
 	//		EnableRelaxedContentType: true,
@@ -46,6 +52,7 @@ func init() {
 	err := api.SetRoutes(
 		&rest.Route{"POST", "/signup", auth.Optional(Signup)},
 		&rest.Route{"POST", "/login", auth.Optional(Login)},
+		&rest.Route{"POST", "/logout", auth.Required(Logout)},
 		&rest.Route{"GET", "/me", auth.Optional(GetMe)},
 		&rest.Route{"GET", "/private", auth.Required(GetMe)},
 	)
@@ -53,53 +60,36 @@ func init() {
 		log.Fatal(err)
 	}
 
-	http.Handle("/", http.FileServer(http.Dir("app/")))
+	http.Handle("/", http.FileServer(http.Dir("../app/")))
 	http.Handle("/api/", http.StripPrefix("/api", &api))
 }
 
-type TokenAuth struct {
-	verifyKey, signKey []byte
-}
+type SessionAuth struct{}
 
-func (ta *TokenAuth) loadKeys() {
-	var err error
-
-	ta.signKey, err = ioutil.ReadFile(privKeyPath)
-	if err != nil {
-		log.Fatal("Error reading private key")
-		return
-	}
-
-	ta.verifyKey, err = ioutil.ReadFile(pubKeyPath)
-	if err != nil {
-		log.Fatal("Error reading private key")
-		return
-	}
-}
-
-func (ta *TokenAuth) MiddlewareFunc(handler rest.HandlerFunc) rest.HandlerFunc {
-	return ta.Required(func(w rest.ResponseWriter, r *rest.Request, u User) {
+func (this *SessionAuth) MiddlewareFunc(handler rest.HandlerFunc) rest.HandlerFunc {
+	return this.Required(func(w rest.ResponseWriter, r *rest.Request, u User) {
 		handler(w, r)
 	})
 }
 
-func (ta *TokenAuth) Required(handler AuthHandlerFunc) rest.HandlerFunc {
+func (this *SessionAuth) Required(handler AuthHandlerFunc) rest.HandlerFunc {
 	return func(w rest.ResponseWriter, r *rest.Request) {
-		ta.authWrapper(handler, w, r, true)
+		this.authWrapper(handler, w, r, true)
 	}
 }
-func (ta *TokenAuth) Optional(handler AuthHandlerFunc) rest.HandlerFunc {
+func (this *SessionAuth) Optional(handler AuthHandlerFunc) rest.HandlerFunc {
 	return func(w rest.ResponseWriter, r *rest.Request) {
-		ta.authWrapper(handler, w, r, false)
+		this.authWrapper(handler, w, r, false)
 	}
 }
-func (ta *TokenAuth) authWrapper(handler AuthHandlerFunc, w rest.ResponseWriter, r *rest.Request, required bool) {
-	token, err := ta.Validate(r)
-	if err == nil && token.Valid {
-		if token.Claims["iss"].(int64) < time.Now().Add(-time.Hour*24).Unix() {
-			ta.Refresh(w, token.Claims["usr"].(int64))
+func (this *SessionAuth) authWrapper(handler AuthHandlerFunc, w rest.ResponseWriter, r *rest.Request, required bool) {
+	session := this.getSession(r)
+	if session != nil {
+		if session.CreatedAt.Before(time.Now().Add(-time.Hour * 24)) {
+			delete(sessions, session.name())
+			this.NewSession(w, session.UserId)
 		}
-		user := users[token.Claims["usr"].(int64)]
+		user := users[session.UserId]
 		user.Password = ""
 		handler(w, r, user)
 		return
@@ -110,53 +100,52 @@ func (ta *TokenAuth) authWrapper(handler AuthHandlerFunc, w rest.ResponseWriter,
 		return
 	}
 
-	if err == http.ErrNoCookie {
-		rest.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	/*
-		if err.(type) == *jwt.ValidationError {
-			vErr := err.(*jwt.ValidationError)
-			if vErr.Errors == jwt.ValidationErrorExpired {
-				rest.Error(w, "Authentication Timeout", 419)
-				return
-			}
-		}
-	*/
-	rest.Error(w, err.Error(), http.StatusUnauthorized)
+	rest.Error(w, "{\"error\": \"Unauthorized\"}", http.StatusUnauthorized)
 	return
 }
 
-func (ta *TokenAuth) Validate(r *rest.Request) (*jwt.Token, error) {
-	tokenCookie, err := r.Request.Cookie(tokenName)
-	if err != nil {
-		return nil, err
+func (this *SessionAuth) getSession(r *rest.Request) *Session {
+	cookie, err := r.Request.Cookie(cookieName)
+	if err != nil || cookie.Value == "" {
+		return nil
 	}
-
-	if tokenCookie.Value == "" {
-		return nil, http.ErrNoCookie
+	if session, ok := sessions[cookie.Value]; ok {
+		if session.Expiry.After(time.Now()) {
+			return &session
+		}
+		delete(sessions, cookie.Value)
 	}
+	return nil
+}
 
-	return jwt.Parse(tokenCookie.Value, func(token *jwt.Token) (interface{}, error) {
-		return ta.verifyKey, nil
+func (this *SessionAuth) NewSession(w rest.ResponseWriter, userid int64) {
+	var session = Session{
+		UserId:    userid,
+		SessionId: rand.Int63(),
+		CreatedAt: time.Now(),
+		Expiry:    time.Now().Add(time.Hour * 24 * 30),
+	}
+	var name = session.name()
+	sessions[name] = session
+
+	http.SetCookie(w.(http.ResponseWriter), &http.Cookie{
+		Name:     cookieName,
+		Value:    name,
+		Path:     "/",
+		MaxAge:   int(session.Expiry.Unix() - session.CreatedAt.Unix()),
+		HttpOnly: true,
 	})
 }
 
-func (ta *TokenAuth) Refresh(w rest.ResponseWriter, userid int64) {
-	t := jwt.New(jwt.GetSigningMethod("RS256"))
-	t.Claims["usr"] = userid
-	t.Claims["iss"] = time.Now().Unix()
-	t.Claims["exp"] = time.Now().Add(time.Hour * 24 * 30).Unix()
-	tokenString, err := t.SignedString(ta.signKey)
-	if err != nil {
-		rest.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+func (this *SessionAuth) DestroySession(w rest.ResponseWriter, session *Session) {
+	var name = session.name()
+	delete(sessions, name)
+
 	http.SetCookie(w.(http.ResponseWriter), &http.Cookie{
-		Name:       tokenName,
-		Value:      tokenString,
-		Path:       "/",
-		RawExpires: "0",
+		Name:   cookieName,
+		Value:  "",
+		Path:   "/",
+		MaxAge: -1,
 	})
 }
 
@@ -178,6 +167,8 @@ func Login(w rest.ResponseWriter, r *rest.Request, u User) {
 			return
 		}
 
+		log.Println("Credentials: ", credentials)
+
 		userid := emails[credentials.Email]
 		if userid == 0 {
 			rest.Error(w, err.Error(), http.StatusUnauthorized)
@@ -190,9 +181,14 @@ func Login(w rest.ResponseWriter, r *rest.Request, u User) {
 		}
 		u.Password = ""
 
-		auth.Refresh(w, u.Id)
+		auth.NewSession(w, u.Id)
 	}
 	w.WriteJson(u)
+}
+
+func Logout(w rest.ResponseWriter, r *rest.Request, u User) {
+	auth.DestroySession(w, auth.getSession(r))
+	w.WriteJson(User{})
 }
 
 func Signup(w rest.ResponseWriter, r *rest.Request, u User) {
@@ -203,6 +199,8 @@ func Signup(w rest.ResponseWriter, r *rest.Request, u User) {
 			rest.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		log.Println("Credentials: ", credentials)
 
 		userid := emails[credentials.Email]
 		if userid != 0 {
@@ -220,7 +218,7 @@ func Signup(w rest.ResponseWriter, r *rest.Request, u User) {
 		users[u.Id] = u
 		emails[u.Email] = u.Id
 		u.Password = ""
-		auth.Refresh(w, u.Id)
+		auth.NewSession(w, u.Id)
 	}
 	w.WriteJson(u)
 }

@@ -12,10 +12,10 @@ auth
 		notAuthorized: 'auth-not-authorized'
 	})
 	.constant('USER_ROLES', {
-		all: '*',
-		admin: 'admin',
+		all: '',
+		anon: 'anon',
 		user: 'user',
-		anon: 'anon'
+		admin: 'admin',
 	})
 	.controller('LoginController', function($scope, $rootScope, AUTH_EVENTS, AuthService) {
 		console.log("LoginCtrl");
@@ -24,29 +24,41 @@ auth
 			password: '',
 		};
 		$scope.action = 'Login';
+		$scope.loginError = '';
 
 		$scope.auth = function(action, credentials) {
 			AuthService.auth(action, credentials).then(function(user) {
 				$rootScope.$broadcast(AUTH_EVENTS.loginSuccess);
-				$scope.setCurrentUser(user);
-			}, function() {
+			}, function(res) {
 				$rootScope.$broadcast(AUTH_EVENTS.loginFailed);
+				$scope.loginError = res.data.Error;
 			});
 		};
+		$scope.clearError = function() { $scope.loginError = ""; };
 	})
-	.factory('AuthService', function($http, Session) {
+	.factory('AuthService', function($http, $rootScope, Session, AUTH_EVENTS) {
 		var authService = {};
 
 		authService.auth = function(action, credentials) {
-			console.log("auth", credentials)
-			console.log(action)
 			var url = (action == 'Login' ? 'login' :
 				      (action == 'Sign up' ? 'signup' :
 				       "forgot"))
 			return $http
 				.post('/api/' + url, credentials)
 				.then(function(res) {
-					Session.create(res.data.Id, res.data.Role);
+					Session.create(res.data);
+					return res.data;
+				});
+		};
+
+		authService.ping = function() {
+			return $http
+				.get('/api/me')
+				.then(function(res) {
+					Session.create(res.data);
+					if (!!Session.userId) {
+					//	$rootScope.$broadcast(AUTH_EVENTS.loginSuccess);
+					}
 					return res.data;
 				});
 		};
@@ -56,6 +68,7 @@ auth
 				.post('/api/logout')
 				.then(function(res) {
 					Session.destroy();
+					$rootScope.$broadcast(AUTH_EVENTS.logoutSuccess);
 					return res.data;
 				});
 		}
@@ -65,50 +78,62 @@ auth
 		};
 
 		authService.isAuthorized = function(authorizedRoles) {
+//			console.log("authorizedRoles: ", authorizedRoles, "Session.userRole:", Session.userRole)
 			if (authorizedRoles === null || authorizedRoles === undefined) {
 				return true;
 			}
 			if (!angular.isArray(authorizedRoles)) {
 				authorizedRoles = [authorizedRoles];
 			}
-			return (authorizedRoles.length == 0 || 
-				(authService.isAuthenticated() &&
-				authorizedRoles.indexOf(Session.userRole) !== -1));
+			return (authorizedRoles.length == 0 || authorizedRoles.indexOf(Session.userRole) !== -1);
 		};
 
 		return authService;
 	})
 	.service('Session', function() {
-		this.create = function(userId, userRole) {
-			this.userId = userId;
-			this.userRole = userRole;
+		this.create = function(user) {
+			this.userId = user.Id;
+			this.userRole = user.Role;
 		};
 		this.destroy = function() {
-			this.userId = null;
-			this.userRole = null;
+			this.userId = 0;
+			this.userRole = 'anon';
 		};
 		return this;
 	})
-	.controller('ApplicationController', function($scope, USER_ROLES, AuthService) {
-		$scope.currentUser = null;
+	.controller('ApplicationController', function($scope, $http, USER_ROLES, AuthService, Session) {
+		console.log("ApplicationController enter: ", arguments);
+		console.log("session: ", Session)
+		$scope.currentUser = Session;
 		$scope.userRoles = USER_ROLES;
 		$scope.isAuthorized = AuthService.isAuthorized;
 		$scope.logout = AuthService.logout;
-		$scope.isLoginPage = false;
-
-		$scope.setCurrentUser = function(user) {
-			$scope.currentUser = user;
-		};
-
 	})
-	.run(function($rootScope, AUTH_EVENTS, AuthService) {
+	.run(function($rootScope, AUTH_EVENTS, AuthService, Session, $http) {
 		$rootScope.$on('$stateChangeStart', function(event, next) {
-			console.log("stateChangeStart");
+			console.log("stateChangeStart", arguments);
 			console.log("event", event);
 			console.log("next", next);
+
+			// move this to a decorator?
+			next.resolve = angular.extend(next.resolve, {
+				session: function (authService) {
+					if (Session.userRoles === undefined) {
+						return authService.ping();
+					} else {
+						return Session;
+					}
+				},
+				auth: function (session) {
+//					return a promise that waits for login to succeed...
+				}
+			})
+
 			var authorizedRoles = next.data && next.data.authorizedRoles;
 			console.log("authorizedRoles", authorizedRoles);
+			console.log("Session: ", Session)
 			if (!AuthService.isAuthorized(authorizedRoles)) {
+				console.log("!AuthService.isAuthorized")
 				event.preventDefault();
 				if (AuthService.isAuthenticated()) {
 					// user is not allowed
@@ -121,14 +146,26 @@ auth
 				}
 			}
 		});
+		$rootScope.$on('$stateChangeError', function(event, toState, toParams, fromState, fromParams, error){
+			console.log("$stateChangeError: ", arguments);
+		});
+		AuthService.ping();
 	})
-	.config(function($httpProvider) {
+	.config(function($httpProvider, $stateProvider) {
 		$httpProvider.interceptors.push([
 			'$injector',
 			function($injector) {
 				return $injector.get('AuthInterceptor');
 			}
 		]);
+		// Need access to both state representations. Decorate any attribute to access private state object.
+		$stateProvider.decorator('path', function(state, parentFn) {
+			if (state.self.resolve === undefined) {
+				state.self.resolve = {};
+				state.resolve = state.self.resolve;
+			}
+			return parentFn(state);
+		});
 	})
 	.factory('AuthInterceptor', function($rootScope, $q, AUTH_EVENTS) {
 		return {
@@ -145,16 +182,35 @@ auth
 	})
 	.directive('loginDialog', function(AUTH_EVENTS) {
 		return {
-			restrict: 'A',
+			restrict: 'E',
 			template: '<div ng-if="visible" ng-include="\'login.html\'">',
 			link: function(scope) {
 				var showDialog = function() {
 					scope.visible = true;
 				};
+				var hideDialog = function() {
+					scope.visible = false;
+				};
 
 				scope.visible = false;
 				scope.$on(AUTH_EVENTS.notAuthenticated, showDialog);
 				scope.$on(AUTH_EVENTS.sessionTimeout, showDialog)
+				scope.$on(AUTH_EVENTS.loginSuccess, hideDialog)
+			}
+		};
+	})
+	.directive('roles', function(ngIfDirective, AuthService) {
+		var ngIf = ngIfDirective[0];
+		return {
+			transclude: ngIf.transclude,
+			priority: ngIf.priority,
+			terminal: ngIf.terminal,
+			restrict: ngIf.restrict,
+			link: function($scope, $element, $attr) {
+				$attr.ngIf = function() {
+					return AuthService.isAuthorized($attr['roles']);
+				};
+				ngIf.link.apply(ngIf, arguments);
 			}
 		};
 	});

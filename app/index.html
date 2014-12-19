@@ -13,17 +13,16 @@
   <body ng-controller="ApplicationController">
     <div>
       <span class="menu">
-        <a href="#/">Home</a> |
-        <a href="#/private">Private</a> |
-        <a href="#/signup">Signup</a> |
-        <a ng-click="logout()" ng-if="currentUser">Logout</a>
+        <a href="#/">Home</a>
+        <a roles="user" href="#/private">Private</a>
+        <a roles="anon" href="#/signup">Login</a>
+        <a roles="user" href="#/" ng-click="logout()">Logout</a>
       </span>
     </div>
     <div>
-      isLoginPage: {{isLoginPage}}<br>
-      currentUser: {{currentUser}}<br>
+      currentUser: {{currentUser}}
     </div>
     <div ui-view></div>
-    <div login-dialog ng-if="!isLoginPage"></div>
+    <login-dialog />
   </body>
 </html>

@@ -4,17 +4,17 @@
 	      action="sink.html" target="sink" method="post"
 	      ng-controller="LoginController"
 	      ng-submit="auth(action, credentials)"
-	      novalidate form-autofill-fix>
+	      novalidate><!-form-autofill-fix>
 
 		<div>
-			<label><input type="radio" ng-model="action" value="Sign up" / > Sign up</label>
-			<label><input type="radio" ng-model="action" value="Login" /> Login</label>
-			<label><input type="radio" ng-model="action" value="Forgot" /> Forgot</label>
+			<label><input type="radio" ng-model="action" ng-change="clearError()" value="Sign up" / > Sign up</label>
+			<label><input type="radio" ng-model="action" ng-change="clearError()" value="Login" /> Login</label>
+			<label><input type="radio" ng-model="action" ng-change="clearError()" value="Forgot" /> Forgot</label>
 		</div>
 
 		<div>
 			<label for="email">Email:</label>
-			<input type="email" id="email" ng-model="credentials.email">
+			<input id="email" ng-model="credentials.email">
 		</div>
 		<div ng-show="action!='Forgot'">
 			<label for="password">Password:</label>
@@ -22,6 +22,7 @@
 		</div>
 		<div>
 			<button type="submit">{{action}}</button>
+			<span>{{loginError}}</span>
 		</div>
 	</form>
 </div>

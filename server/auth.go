@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/mail"
 	"time"
 )
 
@@ -50,11 +51,14 @@ func init() {
 	//		EnableRelaxedContentType: true,
 	}
 	err := api.SetRoutes(
-		&rest.Route{"POST", "/signup", auth.Optional(Signup)},
-		&rest.Route{"POST", "/login", auth.Optional(Login)},
+		&rest.Route{"POST", "/signup", auth.Anon(Signup)},
+		&rest.Route{"POST", "/login", auth.Anon(Login)},
+		&rest.Route{"POST", "/forgot", auth.Anon(Forgot)},
 		&rest.Route{"POST", "/logout", auth.Required(Logout)},
 		&rest.Route{"GET", "/me", auth.Optional(GetMe)},
-		&rest.Route{"GET", "/private", auth.Required(GetMe)},
+		&rest.Route{"GET", "/home", auth.Optional(Home)},
+		&rest.Route{"GET", "/private", auth.Required(Private)},
+		&rest.Route{"GET", "/admin", auth.Admin(Admin)},
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -65,6 +69,14 @@ func init() {
 }
 
 type SessionAuth struct{}
+type AuthRequired int
+
+const (
+	AUTH_ANON     AuthRequired = iota
+	AUTH_OPTIONAL AuthRequired = iota
+	AUTH_REQUIRED AuthRequired = iota
+	AUTH_ADMIN    AuthRequired = iota
+)
 
 func (this *SessionAuth) MiddlewareFunc(handler rest.HandlerFunc) rest.HandlerFunc {
 	return this.Required(func(w rest.ResponseWriter, r *rest.Request, u User) {
@@ -72,35 +84,55 @@ func (this *SessionAuth) MiddlewareFunc(handler rest.HandlerFunc) rest.HandlerFu
 	})
 }
 
-func (this *SessionAuth) Required(handler AuthHandlerFunc) rest.HandlerFunc {
+func (this *SessionAuth) Anon(handler AuthHandlerFunc) rest.HandlerFunc {
 	return func(w rest.ResponseWriter, r *rest.Request) {
-		this.authWrapper(handler, w, r, true)
+		this.authWrapper(handler, w, r, AUTH_ANON)
 	}
 }
 func (this *SessionAuth) Optional(handler AuthHandlerFunc) rest.HandlerFunc {
 	return func(w rest.ResponseWriter, r *rest.Request) {
-		this.authWrapper(handler, w, r, false)
+		this.authWrapper(handler, w, r, AUTH_OPTIONAL)
 	}
 }
-func (this *SessionAuth) authWrapper(handler AuthHandlerFunc, w rest.ResponseWriter, r *rest.Request, required bool) {
-	session := this.getSession(r)
-	if session != nil {
+func (this *SessionAuth) Required(handler AuthHandlerFunc) rest.HandlerFunc {
+	return func(w rest.ResponseWriter, r *rest.Request) {
+		this.authWrapper(handler, w, r, AUTH_REQUIRED)
+	}
+}
+func (this *SessionAuth) Admin(handler AuthHandlerFunc) rest.HandlerFunc {
+	return func(w rest.ResponseWriter, r *rest.Request) {
+		this.authWrapper(handler, w, r, AUTH_ADMIN)
+	}
+}
+
+func (this *SessionAuth) authWrapper(handler AuthHandlerFunc, w rest.ResponseWriter, r *rest.Request, required AuthRequired) {
+	if session := this.getSession(r); session != nil {
+		if required == AUTH_ANON {
+			rest.Error(w, "Must not be logged in.", http.StatusUnauthorized)
+			return
+		}
 		if session.CreatedAt.Before(time.Now().Add(-time.Hour * 24)) {
 			delete(sessions, session.name())
 			this.NewSession(w, session.UserId)
 		}
 		user := users[session.UserId]
+
+		if required == AUTH_ADMIN && user.Role != "admin" {
+			rest.Error(w, "Must be an admin.", http.StatusUnauthorized)
+			return
+		}
+
 		user.Password = ""
 		handler(w, r, user)
 		return
 	}
 
-	if !required {
-		handler(w, r, User{})
+	if required == AUTH_ANON || required == AUTH_OPTIONAL {
+		handler(w, r, User{Role: "anon"})
 		return
 	}
 
-	rest.Error(w, "{\"error\": \"Unauthorized\"}", http.StatusUnauthorized)
+	rest.Error(w, "Unauthorized", http.StatusUnauthorized)
 	return
 }
 
@@ -138,9 +170,11 @@ func (this *SessionAuth) NewSession(w rest.ResponseWriter, userid int64) {
 }
 
 func (this *SessionAuth) DestroySession(w rest.ResponseWriter, session *Session) {
+	log.Print("deleting session")
 	var name = session.name()
 	delete(sessions, name)
 
+	log.Print("Setting expired cookie")
 	http.SetCookie(w.(http.ResponseWriter), &http.Cookie{
 		Name:   cookieName,
 		Value:  "",
@@ -161,22 +195,19 @@ type Credentials struct {
 func Login(w rest.ResponseWriter, r *rest.Request, u User) {
 	if u.Id == 0 {
 		credentials := Credentials{}
-		err := r.DecodeJsonPayload(&credentials)
-		if err != nil {
+		if err := r.DecodeJsonPayload(&credentials); err != nil {
 			rest.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		log.Println("Credentials: ", credentials)
-
-		userid := emails[credentials.Email]
-		if userid == 0 {
-			rest.Error(w, err.Error(), http.StatusUnauthorized)
+		userid, ok := emails[credentials.Email]
+		if !ok {
+			rest.Error(w, "User doesn't exist", http.StatusUnauthorized)
 			return
 		}
 		u = users[userid]
 		if u.Email != credentials.Email || u.Password != credentials.Password {
-			rest.Error(w, err.Error(), http.StatusUnauthorized)
+			rest.Error(w, "Bad password", http.StatusUnauthorized)
 			return
 		}
 		u.Password = ""
@@ -186,25 +217,21 @@ func Login(w rest.ResponseWriter, r *rest.Request, u User) {
 	w.WriteJson(u)
 }
 
-func Logout(w rest.ResponseWriter, r *rest.Request, u User) {
-	auth.DestroySession(w, auth.getSession(r))
-	w.WriteJson(User{})
-}
-
 func Signup(w rest.ResponseWriter, r *rest.Request, u User) {
 	if u.Id == 0 {
 		credentials := Credentials{}
-		err := r.DecodeJsonPayload(&credentials)
-		if err != nil {
+		if err := r.DecodeJsonPayload(&credentials); err != nil {
 			rest.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		log.Println("Credentials: ", credentials)
+		if address, err := mail.ParseAddress(credentials.Email); err != nil || credentials.Email != address.Address {
+			rest.Error(w, "Bad email address.", http.StatusForbidden)
+			return
+		}
 
-		userid := emails[credentials.Email]
-		if userid != 0 {
-			rest.Error(w, err.Error(), http.StatusForbidden)
+		if _, ok := emails[credentials.Email]; ok {
+			rest.Error(w, "User already exists", http.StatusForbidden)
 			return
 		}
 
@@ -212,7 +239,7 @@ func Signup(w rest.ResponseWriter, r *rest.Request, u User) {
 			Id:       nextUserId,
 			Email:    credentials.Email,
 			Password: credentials.Password,
-			Role:     "",
+			Role:     "user",
 		}
 		nextUserId += 1
 		users[u.Id] = u
@@ -221,6 +248,55 @@ func Signup(w rest.ResponseWriter, r *rest.Request, u User) {
 		auth.NewSession(w, u.Id)
 	}
 	w.WriteJson(u)
+}
+
+func Logout(w rest.ResponseWriter, r *rest.Request, u User) {
+	if session := auth.getSession(r); session != nil {
+		auth.DestroySession(w, session)
+	}
+	w.WriteJson(User{Role: "anon"})
+}
+
+func Forgot(w rest.ResponseWriter, r *rest.Request, u User) {
+	if u.Id != 0 {
+		rest.Error(w, "Already logged in", http.StatusBadRequest)
+		return
+	}
+
+	credentials := Credentials{}
+	if err := r.DecodeJsonPayload(&credentials); err != nil {
+		rest.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if address, err := mail.ParseAddress(credentials.Email); err != nil || credentials.Email != address.Address {
+		rest.Error(w, "Bad email address.", http.StatusForbidden)
+		return
+	}
+
+	if _, ok := emails[credentials.Email]; !ok {
+		rest.Error(w, "User doesn't exist", http.StatusForbidden)
+		return
+	}
+	// TODO: Send recovery email
+	rest.Error(w, "Recovery email sent", http.StatusUnauthorized)
+	return
+}
+
+type State struct {
+	State string
+}
+
+func Home(w rest.ResponseWriter, r *rest.Request, u User) {
+	w.WriteJson(State{"home"})
+}
+
+func Private(w rest.ResponseWriter, r *rest.Request, u User) {
+	w.WriteJson(State{"private"})
+}
+
+func Admin(w rest.ResponseWriter, r *rest.Request, u User) {
+	w.WriteJson(State{"admin"})
 }
 
 func main() {

@@ -16,30 +16,45 @@ var authApp = angular.module('authApp', [
 			url: '/signup',
 			templateUrl: 'signup.html',
 			controller: 'SignupCtrl',
-			data: { authorizedRoles: [USER_ROLES.anon] }
+			data: { authorizedRoles: [USER_ROLES.user] }
 		})
 		.state('private', {
 			url: '/private',
-			templateUrl: 'private.html',
+			templateUrl: 'home.html',
 			controller: 'PrivateCtrl',
-			data: { authorizedRoles: [USER_ROLES.all] }
+			data: { authorizedRoles: [USER_ROLES.user] }
+		})
+		.state('admin', {
+			url: '/admin',
+			templateUrl: 'home.html',
+			controller: 'AdminCtrl',
+			data: { authorizedRoles: [USER_ROLES.admin] }
 		});
+		$urlRouterProvider
+		.otherwise('/');
 	}
 )
 .controller('HomeCtrl',
-	function($scope, AuthService, Session) {
+	function($scope, $resource) {
 		console.log("HomeCtrl");
+		$scope.state = $resource('/api/home').get()
 	}
 )
 .controller('SignupCtrl',
-	function($scope, AuthService, Session) {
+	function($scope, $resource) {
 		console.log("SignupCtrl");
-
 	}
 )
 .controller('PrivateCtrl',
-	function($scope, AuthService, Session) {
+	function($scope, $resource) {
 		console.log("PrivateCtrl");
+		$scope.state = $resource('/api/private').get()
+	}
+)
+.controller('AdminCtrl',
+	function($scope, $resource) {
+		console.log("AdminCtrl");
+		$scope.state = $resource('/api/admin').get()
 	}
 );
 

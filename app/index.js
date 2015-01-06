@@ -34,12 +34,12 @@ var authApp = angular.module('authApp', [
 				})
 				.state('404', {
 					parent: 'public',
-//					url: '/404',
+					url: '/404',
 					templateUrl: '404.html'
 				})
 				.state('403', {
 					parent: 'public',
-//					url: '/401',
+					url: '/403',
 					templateUrl: '403.html'
 				});
 			// Anonymous routes
@@ -118,6 +118,11 @@ var authApp = angular.module('authApp', [
 			$urlRouterProvider.otherwise('/');
 		}
 	)
+	.controller('ApplicationController', function($scope, Auth) {
+		console.log("ApplicationController enter: ", arguments);
+		$scope.currentUser = Auth.user;
+		$scope.logout = Auth.logout;
+	})
 	.controller('HomeCtrl',
 		function($scope, $resource) {
 			console.log("HomeCtrl");

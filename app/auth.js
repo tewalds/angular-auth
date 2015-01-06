@@ -117,7 +117,6 @@ angular.module('auth', [
 			},
 
 			isAuthorized: function(authLevel) {
-	//			console.log("authLevel: ", authLevel)
 				if (!Session.userSet()) { return false; }
 				if (authLevel === null || authLevel === undefined) {
 					return true;
@@ -137,13 +136,6 @@ angular.module('auth', [
 			user: Session.user,
 		};
 		return Auth;
-	})
-	.controller('ApplicationController', function($scope, $http, AuthLevels, Auth) {
-		console.log("ApplicationController enter: ", arguments);
-		$scope.currentUser = Auth.user;
-		$scope.authLevels = AuthLevels;
-		$scope.isAuthorized = Auth.isAuthorized;
-		$scope.logout = Auth.logout;
 	})
 	// We don't need to hook into stateChangeStart because it's all done by the resolve below!
 	// .run(function($rootScope, Auth) {
@@ -177,14 +169,17 @@ angular.module('auth', [
 	.config(function($httpProvider) {
 		// intercept failing http requests and go to login
 		$httpProvider.interceptors.push(function($q, $location, Session) {
+			// I'd like to use $state instead of $location, but that creates
+			// a circular dependency.
 			return {
 				'responseError': function(response) {
 					if (response.status === 401 || response.status === 419) {
 						// probably timed out
 						Session.clear();
-					}
-					if (response.status === 401 || response.status === 403) {
 						$location.path('/login');
+					}
+					if (response.status === 403) {
+						$location.path('/403');
 					}
 					return $q.reject(response);
 				}
@@ -206,26 +201,3 @@ angular.module('auth', [
 			}
 		};
 	});
-/*	.directive('formAutofillFix', function($timeout) {
-		return function(scope, element, attrs) {
-			element.prop('method', 'post');
-			if (attrs.ngSubmit) {
-				$timeout(function() {
-					element
-						.unbind('submit')
-						.bind('submit', function(event) {
-							event.preventDefault();
-							console.log("element", element)
-							console.log("element.find", element.find('input, textarea, select'))
-							element
-								.find('input, textarea, select')
-								.trigger('input')
-								.trigger('change')
-								.trigger('keydown');
-							scope.$apply(attrs.ngSubmit);
-						});
-				});
-			}
-		};
-	});
-	*/

@@ -307,6 +307,6 @@ func Admin(w rest.ResponseWriter, r *rest.Request, u User) {
 }
 
 func main() {
-	log.Println("Listening...")
+	log.Println("Listening: http://localhost:8081/")
 	http.ListenAndServe(":8081", nil)
 }

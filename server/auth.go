@@ -13,10 +13,10 @@ import (
 type AuthHandlerFunc func(rest.ResponseWriter, *rest.Request, User)
 
 type User struct {
-	Id       int64
-	Email    string
-	Password string
-	Role     string
+	Id       int64  `json:"id"`
+	Email    string `json:"email"`
+	Password string `json:"-"`
+	Admin    bool   `json:"admin"`
 }
 
 type Session struct {
@@ -58,6 +58,8 @@ func init() {
 		&rest.Route{"GET", "/me", auth.Optional(GetMe)},
 		&rest.Route{"GET", "/home", auth.Optional(Home)},
 		&rest.Route{"GET", "/private", auth.Required(Private)},
+		&rest.Route{"GET", "/public", auth.Optional(Public)},
+		&rest.Route{"GET", "/anon", auth.Anon(Anon)},
 		&rest.Route{"GET", "/admin", auth.Admin(Admin)},
 	)
 	if err != nil {
@@ -117,18 +119,17 @@ func (this *SessionAuth) authWrapper(handler AuthHandlerFunc, w rest.ResponseWri
 		}
 		user := users[session.UserId]
 
-		if required == AUTH_ADMIN && user.Role != "admin" {
+		if required == AUTH_ADMIN && user.Admin {
 			rest.Error(w, "Must be an admin.", http.StatusUnauthorized)
 			return
 		}
 
-		user.Password = ""
 		handler(w, r, user)
 		return
 	}
 
 	if required == AUTH_ANON || required == AUTH_OPTIONAL {
-		handler(w, r, User{Role: "anon"})
+		handler(w, r, User{})
 		return
 	}
 
@@ -210,7 +211,6 @@ func Login(w rest.ResponseWriter, r *rest.Request, u User) {
 			rest.Error(w, "Bad password", http.StatusUnauthorized)
 			return
 		}
-		u.Password = ""
 
 		auth.NewSession(w, u.Id)
 	}
@@ -239,12 +239,11 @@ func Signup(w rest.ResponseWriter, r *rest.Request, u User) {
 			Id:       nextUserId,
 			Email:    credentials.Email,
 			Password: credentials.Password,
-			Role:     "user",
+			//Admin:    credentials.Admin,
 		}
 		nextUserId += 1
 		users[u.Id] = u
 		emails[u.Email] = u.Id
-		u.Password = ""
 		auth.NewSession(w, u.Id)
 	}
 	w.WriteJson(u)
@@ -254,7 +253,7 @@ func Logout(w rest.ResponseWriter, r *rest.Request, u User) {
 	if session := auth.getSession(r); session != nil {
 		auth.DestroySession(w, session)
 	}
-	w.WriteJson(User{Role: "anon"})
+	w.WriteJson(User{})
 }
 
 func Forgot(w rest.ResponseWriter, r *rest.Request, u User) {
@@ -284,11 +283,19 @@ func Forgot(w rest.ResponseWriter, r *rest.Request, u User) {
 }
 
 type State struct {
-	State string
+	State string `json:"state"`
 }
 
 func Home(w rest.ResponseWriter, r *rest.Request, u User) {
 	w.WriteJson(State{"home"})
+}
+
+func Public(w rest.ResponseWriter, r *rest.Request, u User) {
+	w.WriteJson(State{"public"})
+}
+
+func Anon(w rest.ResponseWriter, r *rest.Request, u User) {
+	w.WriteJson(State{"anon"})
 }
 
 func Private(w rest.ResponseWriter, r *rest.Request, u User) {
